@@ -49,11 +49,17 @@ router.get('/default', async (req, res) => {
 // All other waypoints routes require authentication
 router.use(authenticateToken);
 
-// Get all waypoints
+// Get all waypoints for the authenticated user (plus global Default Location)
 router.get('/', async (req, res) => {
   try {
+    const userId = req.user?.id;
     const result = await pool.query(
-      'SELECT * FROM waypoints ORDER BY created_at DESC'
+      `SELECT * 
+       FROM waypoints 
+       WHERE (user_id = $1) 
+          OR (LOWER(name) = 'default location' AND user_id IS NULL)
+       ORDER BY created_at DESC`,
+      [userId]
     );
     res.json(result.rows);
   } catch (error) {
@@ -82,15 +88,16 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create a new waypoint
+// Create a new waypoint (user-specific)
 router.post('/', async (req, res) => {
   try {
     const { name, latitude, longitude, notes, image_url } = req.body;
+    const userId = req.user?.id;
     
     // Check if "Default Location" already exists (case-insensitive)
     if (name && name.trim().toLowerCase() === 'default location') {
       const existingCheck = await pool.query(
-        'SELECT id FROM waypoints WHERE LOWER(name) = $1',
+        'SELECT id FROM waypoints WHERE LOWER(name) = $1 AND user_id IS NULL',
         ['default location']
       );
       
@@ -99,7 +106,7 @@ router.post('/', async (req, res) => {
         const result = await pool.query(
           `UPDATE waypoints 
            SET latitude = $1, longitude = $2, notes = $3, image_url = $4, updated_at = CURRENT_TIMESTAMP
-           WHERE LOWER(name) = $5
+           WHERE LOWER(name) = $5 AND user_id IS NULL
            RETURNING *`,
           [latitude, longitude, notes || null, image_url || null, 'default location']
         );
@@ -108,10 +115,10 @@ router.post('/', async (req, res) => {
     }
     
     const result = await pool.query(
-      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, latitude, longitude, notes || null, image_url || null]
+      [name, latitude, longitude, notes || null, image_url || null, userId || null]
     );
     
     res.status(201).json(result.rows[0]);
@@ -121,15 +128,16 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Update a waypoint
+// Update a waypoint (must belong to user unless it's the global Default Location)
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { name, latitude, longitude, notes, image_url } = req.body;
+    const userId = req.user?.id;
     
     // Get the current waypoint to check if it's "Default Location"
     const currentWaypoint = await pool.query(
-      'SELECT name FROM waypoints WHERE id = $1',
+      'SELECT name, user_id FROM waypoints WHERE id = $1',
       [id]
     );
     
@@ -138,7 +146,13 @@ router.put('/:id', async (req, res) => {
     }
     
     const currentName = currentWaypoint.rows[0].name;
+    const currentUserId = currentWaypoint.rows[0].user_id;
     const isDefaultLocation = currentName && currentName.trim().toLowerCase() === 'default location';
+
+    // Authorization: allow updating only own waypoints, except the global Default Location
+    if (!isDefaultLocation && currentUserId !== userId) {
+      return res.status(403).json({ error: 'Not authorized to update this waypoint' });
+    }
     
     // If it's "Default Location", don't allow name change
     // Also check if trying to change another waypoint's name to "Default Location"
@@ -173,14 +187,15 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Delete a waypoint
+// Delete a waypoint (must belong to user; cannot delete global Default Location)
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.user?.id;
     
     // Get waypoint to check if it's "Default Location" and if it has an image
     const waypointResult = await pool.query(
-      'SELECT name, image_url FROM waypoints WHERE id = $1',
+      'SELECT name, image_url, user_id FROM waypoints WHERE id = $1',
       [id]
     );
     
@@ -192,6 +207,11 @@ router.delete('/:id', async (req, res) => {
     const waypointName = waypointResult.rows[0].name;
     if (waypointName && waypointName.trim().toLowerCase() === 'default location') {
       return res.status(400).json({ error: 'Cannot delete "Default Location"' });
+    }
+
+    // Authorization: allow deleting only own waypoints
+    if (waypointResult.rows[0].user_id !== userId) {
+      return res.status(403).json({ error: 'Not authorized to delete this waypoint' });
     }
     
     // Delete image from Cloudinary if it exists
