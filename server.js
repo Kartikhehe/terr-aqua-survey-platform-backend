@@ -63,6 +63,16 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// Always set CORS headers as a fallback for any responses (including errors)
+app.use((req, res, next) => {
+  const origin = req.headers.origin || process.env.FRONTEND_URL || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  next();
+});
+
 // Additional middleware to ensure CORS headers are set on all responses
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -122,7 +132,10 @@ app.use((err, req, res, next) => {
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS: Origin not allowed' });
   }
-  
+  // Ensure CORS headers are present on error responses
+  const origin = req.headers.origin || process.env.FRONTEND_URL || '*';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
   res.status(500).json({ error: 'Something went wrong!' });
 });
 

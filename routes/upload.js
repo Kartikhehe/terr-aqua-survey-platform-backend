@@ -53,6 +53,8 @@ const upload = multer({
 
 // Upload image to Cloudinary
 router.post('/', upload.single('image'), async (req, res) => {
+  const origin = req.headers.origin || '';
+  console.log('Upload request from origin:', origin, 'method:', req.method, 'user-id:', req.user?.id || 'no-user');
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
@@ -89,6 +91,11 @@ router.post('/', upload.single('image'), async (req, res) => {
     
   } catch (error) {
     console.error('Error uploading image:', error);
+    // Make sure CORS headers are included even on error
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
     res.status(500).json({ error: 'Failed to upload image' });
   }
 });
