@@ -14,6 +14,23 @@ CREATE TABLE IF NOT EXISTS waypoints (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Projects table: groups of waypoints
+CREATE TABLE IF NOT EXISTS projects (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'paused',
+    started_at TIMESTAMP NULL,
+    elapsed_seconds INTEGER DEFAULT 0,
+    last_activity TIMESTAMP NULL,
+    auto_paused BOOLEAN DEFAULT FALSE
+);
+
+-- Add project_id and project_name to waypoints (if not already present)
+ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS project_name VARCHAR(255);
+
 -- Create index on coordinates for faster queries
 CREATE INDEX IF NOT EXISTS idx_waypoints_coordinates ON waypoints(latitude, longitude);
 
@@ -22,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_waypoints_created_at ON waypoints(created_at DESC
 
 -- Create index on user_id for per-user filtering
 CREATE INDEX IF NOT EXISTS idx_waypoints_user_id ON waypoints(user_id);
+CREATE INDEX IF NOT EXISTS idx_waypoints_project_id ON waypoints(project_id);
 
 -- Insert default location (required for the app to work properly)
 -- This location is used when GPS is unavailable

@@ -26,6 +26,19 @@ async function initializeDatabase() {
     await pool.query(authSchema);
     console.log('✓ Users table created');
 
+    // Run SQL migrations placed under database/migrations
+    const migrationsDir = path.join(__dirname, 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+      for (const file of files) {
+        const migrationSql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+        if (migrationSql && migrationSql.trim()) {
+          await pool.query(migrationSql);
+          console.log(`✓ Applied migration: ${file}`);
+        }
+      }
+    }
+
     console.log('\n✅ Database initialization completed successfully!');
     process.exit(0);
   } catch (error) {

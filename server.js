@@ -5,8 +5,10 @@ import cookieParser from 'cookie-parser';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import waypointsRoutes from './routes/waypoints.js';
+import projectsRoutes from './routes/projects.js';
 import uploadRoutes from './routes/upload.js';
 import authRoutes from './routes/auth.js';
+import { startAutoPauseJob } from './jobs/autoPauseProjects.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -107,6 +109,7 @@ app.options('*', (req, res) => {
 // Routes
 app.use('/auth', authRoutes);
 app.use('/api/waypoints', waypointsRoutes);
+app.use('/api/projects', projectsRoutes);
 app.use('/api/upload', uploadRoutes);
 
 // Health check endpoint
@@ -129,5 +132,11 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  // Start the auto-pause background job
+  try {
+    startAutoPauseJob();
+  } catch (err) {
+    console.error('Failed to start auto-pause job:', err?.message || err);
+  }
 });
 

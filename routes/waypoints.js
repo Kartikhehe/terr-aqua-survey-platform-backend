@@ -91,7 +91,7 @@ router.get('/:id', async (req, res) => {
 // Create a new waypoint (user-specific)
 router.post('/', async (req, res) => {
   try {
-    const { name, latitude, longitude, notes, image_url } = req.body;
+    const { name, latitude, longitude, notes, image_url, project_id, project_name } = req.body;
     const userId = req.user?.id;
     
     // Check if "Default Location" already exists (case-insensitive)
@@ -114,14 +114,33 @@ router.post('/', async (req, res) => {
       }
     }
     
+    // If part of a project, ensure name uniqueness within project for this user
+    if (project_id) {
+      const existingCheck = await pool.query(
+        'SELECT id FROM waypoints WHERE project_id = $1 AND user_id = $2 AND LOWER(name) = $3',
+        [project_id, userId, name.trim().toLowerCase()]
+      );
+      if (existingCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'A waypoint with this name already exists in the project' });
+      }
+    }
+
     const result = await pool.query(
-      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url, user_id, project_id, project_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [name, latitude, longitude, notes || null, image_url || null, userId || null]
+      [name, latitude, longitude, notes || null, image_url || null, userId || null, project_id || null, project_name || null]
     );
     
     res.status(201).json(result.rows[0]);
+    // Update project's last_activity timestamp if project_id provided
+    if (project_id) {
+      try {
+        await pool.query('UPDATE projects SET last_activity = CURRENT_TIMESTAMP, auto_paused = FALSE WHERE id = $1', [project_id]);
+      } catch (err) {
+        console.error('Error updating project last_activity:', err);
+      }
+    }
   } catch (error) {
     console.error('Error creating waypoint:', error);
     res.status(500).json({ error: 'Failed to create waypoint' });
@@ -132,7 +151,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, latitude, longitude, notes, image_url } = req.body;
+    const { name, latitude, longitude, notes, image_url, project_id, project_name } = req.body;
     const userId = req.user?.id;
     
     // Get the current waypoint to check if it's "Default Location"
@@ -172,12 +191,23 @@ router.put('/:id', async (req, res) => {
       }
     }
     
+    // If updating project membership ensure unique name within project
+    if (project_id && name) {
+      const existingCheck = await pool.query(
+        'SELECT id FROM waypoints WHERE project_id = $1 AND user_id = $2 AND LOWER(name) = $3 AND id != $4',
+        [project_id, userId, name.trim().toLowerCase(), id]
+      );
+      if (existingCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'A waypoint with this name already exists in the project' });
+      }
+    }
+
     const result = await pool.query(
       `UPDATE waypoints 
-       SET name = $1, latitude = $2, longitude = $3, notes = $4, image_url = $5, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6
+       SET name = $1, latitude = $2, longitude = $3, notes = $4, image_url = $5, project_id = $6, project_name = $7, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8
        RETURNING *`,
-      [name, latitude, longitude, notes || null, image_url || null, id]
+      [name, latitude, longitude, notes || null, image_url || null, project_id || null, project_name || null, id]
     );
     
     res.json(result.rows[0]);
