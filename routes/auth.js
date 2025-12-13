@@ -6,26 +6,28 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
+const allowedOrigins = [
+  'https://terr-aqua-survey-platform.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+const isOriginAllowed = (origin) => {
+  if (!origin || typeof origin !== 'string') return false;
+  if (origin.includes(',') || origin.includes('\n') || origin.includes('\r')) return false;
+  if (allowedOrigins.includes(origin)) return true;
+  if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('vercel.app')) return true;
+  return false;
+};
+
 // Middleware to set CORS headers on all auth routes
 router.use((req, res, next) => {
   const origin = req.headers.origin;
-  const allowedOrigins = [
-    'https://terr-aqua-survey-platform.vercel.app',
-    'http://localhost:5173',
-    'http://localhost:3000',
-    process.env.FRONTEND_URL,
-  ].filter(Boolean);
-  
-  const isAllowed = !origin || 
-                   allowedOrigins.includes(origin) ||
-                   (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) ||
-                   (origin && origin.includes('vercel.app'));
-  
-  if (isAllowed && origin) {
+  if (isOriginAllowed(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
   }
-  
   next();
 });
 
@@ -98,7 +100,7 @@ router.post('/signup', async (req, res) => {
     // For localhost same-origin: use 'lax' and 'secure: false'
     if (isVercelDeployment || isCrossOrigin) {
       // Ensure CORS headers are set before setting cookie
-      if (requestOrigin) {
+      if (requestOrigin && isOriginAllowed(requestOrigin)) {
         res.header('Access-Control-Allow-Origin', requestOrigin);
         res.header('Access-Control-Allow-Credentials', 'true');
       }
@@ -238,7 +240,7 @@ router.post('/login', async (req, res) => {
     // For localhost same-origin: use 'lax' and 'secure: false'
     if (isVercelDeployment || isCrossOrigin) {
       // Ensure CORS headers are set before setting cookie
-      if (requestOrigin) {
+      if (requestOrigin && isOriginAllowed(requestOrigin)) {
         res.header('Access-Control-Allow-Origin', requestOrigin);
         res.header('Access-Control-Allow-Credentials', 'true');
       }
