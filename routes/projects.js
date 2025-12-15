@@ -132,6 +132,34 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
+// Heartbeat endpoint: checkpoint elapsed time and touch last_activity while playing
+router.post('/:id/heartbeat', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    const projectRes = await pool.query('SELECT * FROM projects WHERE id = $1 AND user_id = $2', [id, userId]);
+    if (projectRes.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
+    const project = projectRes.rows[0];
+
+    if (project.status !== 'playing') {
+      // just update last_activity
+      await pool.query('UPDATE projects SET last_activity = $1 WHERE id = $2', [new Date(), id]);
+      const updated = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
+      return res.json(updated.rows[0]);
+    }
+
+    // If playing, checkpoint elapsed seconds and set started_at to now to begin a fresh segment
+    let elapsed = project.elapsed_seconds || 0;
+    if (project.started_at) elapsed += Math.floor((Date.now() - new Date(project.started_at).getTime()) / 1000);
+    await pool.query('UPDATE projects SET elapsed_seconds = $1, started_at = $2, last_activity = $3 WHERE id = $4', [elapsed, new Date(), new Date(), id]);
+    const updated = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
+    res.json(updated.rows[0]);
+  } catch (error) {
+    console.error('Error heartbeat project:', error);
+    res.status(500).json({ error: 'Failed to heartbeat project' });
+  }
+});
+
 // Get single project with waypoints
 router.get('/:id', async (req, res) => {
   try {
