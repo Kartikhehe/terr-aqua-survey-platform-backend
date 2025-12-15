@@ -80,7 +80,6 @@ router.post('/', upload.single('image'), async (req, res) => {
     }
     return res.status(500).json({ error: 'Cloudinary not configured. Uploads are disabled.' });
   }
-  const origin = req.headers.origin || '';
   console.log('Upload request from origin:', origin, 'method:', req.method, 'user-id:', req.user?.id || 'no-user');
   try {
     if (!req.file) {
