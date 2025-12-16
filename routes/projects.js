@@ -176,4 +176,29 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Delete project and all its waypoints
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    // Ensure project belongs to user
+    const projectRes = await pool.query('SELECT * FROM projects WHERE id = $1 AND user_id = $2', [id, userId]);
+    if (projectRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    // Delete all waypoints belonging to this project first (foreign key constraint)
+    await pool.query('DELETE FROM waypoints WHERE project_id = $1', [id]);
+
+    // Delete the project
+    const result = await pool.query('DELETE FROM projects WHERE id = $1 RETURNING *', [id]);
+
+    res.json({ message: 'Project and all waypoints deleted successfully', project: result.rows[0] });
+  } catch (error) {
+    console.error('Error deleting project:', error);
+    res.status(500).json({ error: 'Failed to delete project' });
+  }
+});
+
 export default router;
