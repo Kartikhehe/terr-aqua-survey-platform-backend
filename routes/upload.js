@@ -22,54 +22,32 @@ const isOriginAllowed = (origin) => {
   return false;
 };
 
-// CRITICAL: This must be the FIRST middleware to ensure CORS on ALL responses
-const corsMiddleware = (req, res, next) => {
-  const origin = req.headers.origin;
-
-  console.log('[CORS] Request from origin:', origin);
-
-  if (origin && isOriginAllowed(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-    console.log('[CORS] Headers set for origin:', origin);
-  } else {
-    console.log('[CORS] Origin not allowed or missing:', origin);
-  }
-
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    console.log('[CORS] Handling OPTIONS preflight');
-    return res.status(204).end();
-  }
-
-  next();
-};
-
-// Apply CORS as the FIRST middleware
-router.use(corsMiddleware);
-
-// Diagnostic logging
+// Middleware to set CORS headers on all upload routes
 router.use((req, res, next) => {
-  console.log(`[Upload] ${req.method} ${req.originalUrl}`);
-  console.log('[Upload] Origin:', req.headers.origin);
-  console.log('[Upload] Auth header:', req.headers.authorization ? 'Present' : 'Missing');
+  const origin = req.headers.origin;
+  
+  const isAllowed = !origin || isOriginAllowed(origin);
+  
+  if (isAllowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  }
+  
   next();
 });
 
-// Test endpoint WITHOUT authentication (for CORS testing)
-router.get('/test', (req, res) => {
-  console.log('[Upload] Test endpoint hit');
-  res.json({
-    ok: true,
-    message: 'Upload endpoint reachable',
-    corsHeaders: {
-      origin: res.getHeader('Access-Control-Allow-Origin'),
-      credentials: res.getHeader('Access-Control-Allow-Credentials'),
-    }
-  });
+// Diagnostic: log all incoming requests to this router for debugging
+router.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  const userAgent = req.headers['user-agent'] || '';
+  console.log(`[Upload] ${req.method} ${req.originalUrl} - origin: ${origin} - ua: ${userAgent}`);
+  next();
 });
+
+// Upload route requires authentication
+router.use(authenticateToken);
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
@@ -87,42 +65,28 @@ const upload = multer({
   },
 });
 
-// Wrap authenticateToken to ensure it doesn't break CORS
-const authWrapper = (req, res, next) => {
-  authenticateToken(req, res, (err) => {
-    if (err || !req.user) {
-      console.log('[Upload] Authentication failed');
-      // CORS headers already set by corsMiddleware
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    console.log('[Upload] Authentication successful, user:', req.user.id);
-    next();
-  });
-};
-
-// Upload route with authentication
-router.post('/', authWrapper, upload.single('image'), async (req, res) => {
-  console.log('[Upload] POST handler started');
-
-  // Check Cloudinary configuration
-  const missingCloudinary = !process.env.CLOUDINARY_CLOUD_NAME ||
-    !process.env.CLOUDINARY_API_KEY ||
-    !process.env.CLOUDINARY_API_SECRET;
-
+// Upload image to Cloudinary
+router.post('/', upload.single('image'), async (req, res) => {
+  const origin = req.headers.origin || '';
+  // If Cloudinary environment variables are missing, fail early with a clear error (and CORS headers)
+  const missingCloudinary = !process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET;
   if (missingCloudinary) {
-    console.error('[Upload] Cloudinary environment variables missing');
+    console.error('Cloudinary environment variables are missing. Upload cannot proceed.');
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    }
     return res.status(500).json({ error: 'Cloudinary not configured. Uploads are disabled.' });
   }
-
+  console.log('Upload request from origin:', origin, 'method:', req.method, 'user-id:', req.user?.id || 'no-user');
   try {
     if (!req.file) {
-      console.log('[Upload] No file provided');
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    console.log('[Upload] Processing file:', req.file.originalname, 'Size:', req.file.size);
-
-    // Convert buffer to stream and upload
+    // Convert buffer to stream
     const stream = cloudinaryUpload.uploader.upload_stream(
       {
         folder: 'navigation-tracking',
@@ -134,11 +98,10 @@ router.post('/', authWrapper, upload.single('image'), async (req, res) => {
       },
       (error, result) => {
         if (error) {
-          console.error('[Upload] Cloudinary upload error:', error);
+          console.error('Cloudinary upload error:', error);
           return res.status(500).json({ error: 'Failed to upload image to Cloudinary' });
         }
-
-        console.log('[Upload] Upload successful:', result.secure_url);
+        
         res.json({
           image_url: result.secure_url,
           public_id: result.public_id
@@ -151,11 +114,37 @@ router.post('/', authWrapper, upload.single('image'), async (req, res) => {
     bufferStream.push(req.file.buffer);
     bufferStream.push(null);
     bufferStream.pipe(stream);
-
+    
   } catch (error) {
-    console.error('[Upload] Error:', error);
+    console.error('Error uploading image:', error);
+    // Make sure CORS headers are included even on error
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
     res.status(500).json({ error: 'Failed to upload image' });
   }
 });
 
+// Handle preflight requests specifically for upload
+router.options('/', (req, res) => {
+  const origin = req.headers.origin || '';
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.sendStatus(204);
+});
+
+// Simple test route for confirming upload endpoint and CORS (GET)
+router.get('/test', (req, res) => {
+  const origin = req.headers.origin || '';
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  res.json({ ok: true, message: 'Upload endpoint reachable' });
+});
+
 export default router;
+

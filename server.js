@@ -34,12 +34,9 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-
+    
     // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin) ||
-      origin.includes('localhost') ||
-      origin.includes('127.0.0.1') ||
-      origin.includes('vercel.app')) {
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       // Log for debugging
@@ -123,7 +120,7 @@ app.get('/api/health', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-
+  
   // Handle CORS errors
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS: Origin not allowed' });
