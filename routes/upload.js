@@ -7,24 +7,76 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
+const allowedOrigins = [
+  'https://terr-aqua-survey-platform.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+const isOriginAllowed = (origin) => {
+  if (!origin || typeof origin !== 'string') return false;
+  if (origin.includes(',') || origin.includes('\n') || origin.includes('\r')) return false;
+  if (allowedOrigins.includes(origin)) return true;
+  if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('vercel.app')) return true;
+  return false;
+};
+
+// CRITICAL: This must be the FIRST middleware to ensure CORS on ALL responses
+const corsMiddleware = (req, res, next) => {
+  const origin = req.headers.origin;
+
+  console.log('[CORS] Request from origin:', origin);
+
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    console.log('[CORS] Headers set for origin:', origin);
+  } else {
+    console.log('[CORS] Origin not allowed or missing:', origin);
+  }
+
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    console.log('[CORS] Handling OPTIONS preflight');
+    return res.status(204).end();
+  }
+
+  next();
+};
+
+// Apply CORS as the FIRST middleware
+router.use(corsMiddleware);
+
+// Diagnostic logging
+router.use((req, res, next) => {
+  console.log(`[Upload] ${req.method} ${req.originalUrl}`);
+  console.log('[Upload] Origin:', req.headers.origin);
+  console.log('[Upload] Auth header:', req.headers.authorization ? 'Present' : 'Missing');
+  next();
+});
+
 // Test endpoint WITHOUT authentication (for CORS testing)
 router.get('/test', (req, res) => {
   console.log('[Upload] Test endpoint hit');
   res.json({
     ok: true,
-    message: 'Upload endpoint reachable'
+    message: 'Upload endpoint reachable',
+    corsHeaders: {
+      origin: res.getHeader('Access-Control-Allow-Origin'),
+      credentials: res.getHeader('Access-Control-Allow-Credentials'),
+    }
   });
 });
-
-// Test endpoint WITHOUT authentication (for CORS testing)
-
 
 // Configure multer for memory storage
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 4 * 1024 * 1024, // 4MB limit for Vercel Serverless Functions
+    fileSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
@@ -40,6 +92,7 @@ const authWrapper = (req, res, next) => {
   authenticateToken(req, res, (err) => {
     if (err || !req.user) {
       console.log('[Upload] Authentication failed');
+      // CORS headers already set by corsMiddleware
       return res.status(401).json({ error: 'Unauthorized' });
     }
     console.log('[Upload] Authentication successful, user:', req.user.id);

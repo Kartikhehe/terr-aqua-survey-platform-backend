@@ -32,15 +32,29 @@ const allowedOrigins = [
 // CORS configuration function
 const corsOptions = {
   origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
 
+    // Check if origin is in allowed list
     if (allowedOrigins.includes(origin) ||
       origin.includes('localhost') ||
       origin.includes('127.0.0.1') ||
       origin.includes('vercel.app')) {
       callback(null, true);
     } else {
+      // Log for debugging
       console.log('CORS blocked origin:', origin);
+      console.log('Allowed origins:', allowedOrigins);
+      // In development, allow localhost origins even if not explicitly listed
+      if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        console.log('Allowing localhost origin for development');
+        return callback(null, true);
+      }
+      // Allow any Vercel deployment (for preview deployments)
+      if (origin && origin.includes('vercel.app')) {
+        console.log('Allowing Vercel deployment origin:', origin);
+        return callback(null, true);
+      }
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -53,9 +67,47 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// Always set CORS headers as a fallback for any responses (including errors)
+// Utility to safely set CORS headers only for allowed and valid origins
+const setCorsHeadersSafe = (req, res) => {
+  const incomingOrigin = req.headers.origin;
+  // If there's no origin header, do not set credentialed CORS info
+  if (!incomingOrigin) return false;
+  // Reject origin with potentially invalid characters early
+  if (typeof incomingOrigin !== 'string' || incomingOrigin.includes(',') || incomingOrigin.includes('\n') || incomingOrigin.includes('\r')) return false;
+  const originAllowed = allowedOrigins.includes(incomingOrigin) || incomingOrigin.includes('localhost') || incomingOrigin.includes('127.0.0.1') || incomingOrigin.includes('vercel.app');
+  if (!originAllowed) return false;
+  res.header('Access-Control-Allow-Origin', incomingOrigin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Expose-Headers', 'Set-Cookie');
+  return true;
+};
+
+app.use((req, res, next) => {
+  setCorsHeadersSafe(req, res);
+  // Log allowed origins at startup for debugging
+  next();
+});
+
+// Additional middleware to ensure CORS headers are set on all responses
+app.use((req, res, next) => {
+  // Use centralized safe setting to avoid invalid header characters
+  setCorsHeadersSafe(req, res);
+  next();
+});
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Handle preflight requests explicitly
+app.options('*', (req, res) => {
+  // Use the same safe header setter used throughout the app
+  setCorsHeadersSafe(req, res);
+  res.sendStatus(204);
+});
 
 // Routes
 app.use('/auth', authRoutes);
@@ -69,7 +121,6 @@ app.get('/api/health', (req, res) => {
 });
 
 // Error handling middleware
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
 
@@ -77,23 +128,18 @@ app.use((err, req, res, next) => {
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS: Origin not allowed' });
   }
-
+  // Ensure CORS headers are present on error responses (only if origin is allowed)
+  setCorsHeadersSafe(req, res);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// For Vercel serverless functions, export the app
-export default app;
-
-// Only listen on port in local development (not on Vercel)
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-    // Start the auto-pause background job
-    try {
-      startAutoPauseJob();
-    } catch (err) {
-      console.error('Failed to start auto-pause job:', err?.message || err);
-    }
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  // Start the auto-pause background job
+  try {
+    startAutoPauseJob();
+  } catch (err) {
+    console.error('Failed to start auto-pause job:', err?.message || err);
+  }
+});
 
