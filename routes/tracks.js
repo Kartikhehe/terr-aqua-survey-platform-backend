@@ -66,9 +66,9 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
         const placeholders = [];
 
         points.forEach((point, index) => {
-            const baseIndex = index * 6;
+            const baseIndex = index * 7; // index * 7
             placeholders.push(
-                `($${baseIndex + 1}, $${baseIndex + 2}, ST_SetSRID(ST_MakePoint($${baseIndex + 3}, $${baseIndex + 4}), 4326)::geography, $${baseIndex + 5}, $${baseIndex + 6})`
+                `($${baseIndex + 1}, $${baseIndex + 2}, ST_SetSRID(ST_MakePoint($${baseIndex + 3}, $${baseIndex + 4}), 4326)::geography, $${baseIndex + 5}, $${baseIndex + 6}, $${baseIndex + 7})`
             );
             values.push(
                 project_id,
@@ -76,7 +76,8 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
                 point.lng, // longitude first for ST_MakePoint
                 point.lat, // latitude second
                 point.accuracy || null,
-                point.elevation || null
+                point.elevation || null,
+                point.timestamp || new Date().toISOString() // Use client timestamp if available
             );
         });
 
@@ -88,9 +89,9 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
 
         const result = await pool.query(query, values);
 
-        // Update point count in summary
+        // Update point count and status in summary
         await pool.query(
-            'UPDATE tracks_summary SET point_count = point_count + $1 WHERE project_id = $2 AND user_id = $3 AND is_active = true',
+            'UPDATE tracks_summary SET point_count = point_count + $1, updated_at = CURRENT_TIMESTAMP WHERE project_id = $2 AND user_id = $3 AND is_active = true',
             [points.length, project_id, user_id]
         );
 
