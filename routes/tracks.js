@@ -53,7 +53,7 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
 
         // Verify active track exists
         const trackCheck = await pool.query(
-            'SELECT id FROM tracks_summary WHERE project_id = $1 AND user_id = $2 AND is_active = true',
+            'SELECT id FROM tracks_summary WHERE project_id = $1 AND user_id = $2 AND is_active = true ORDER BY started_at DESC LIMIT 1',
             [project_id, user_id]
         );
 
@@ -61,14 +61,17 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'No active track found for this project' });
         }
 
-        const track_id = trackCheck.rows[0].id;
+        const active_track_id = trackCheck.rows[0].id;
 
         // Build batch insert query using PostGIS ST_MakePoint
         const values = [];
         const placeholders = [];
+        const trackPointCounts = {}; // Track point counts per segment
 
         points.forEach((point, index) => {
-            const baseIndex = index * 8; // index * 8 parameters now
+            const baseIndex = index * 8; // index * 8 parameters
+            const target_track_id = point.track_id || active_track_id;
+
             placeholders.push(
                 `($${baseIndex + 1}, $${baseIndex + 2}, ST_SetSRID(ST_MakePoint($${baseIndex + 3}, $${baseIndex + 4}), 4326)::geography, $${baseIndex + 5}, $${baseIndex + 6}, $${baseIndex + 7}, $${baseIndex + 8})`
             );
@@ -80,8 +83,11 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
                 point.accuracy || null,
                 point.elevation || null,
                 point.timestamp || new Date().toISOString(),
-                track_id
+                target_track_id
             );
+
+            // Tally points per track segment
+            trackPointCounts[target_track_id] = (trackPointCounts[target_track_id] || 0) + 1;
         });
 
         const query = `
@@ -92,11 +98,13 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
 
         const result = await pool.query(query, values);
 
-        // Update point count and status in summary
-        await pool.query(
-            'UPDATE tracks_summary SET point_count = point_count + $1, updated_at = CURRENT_TIMESTAMP WHERE project_id = $2 AND user_id = $3 AND is_active = true',
-            [points.length, project_id, user_id]
-        );
+        // Update point count for each track session specifically
+        for (const [tid, count] of Object.entries(trackPointCounts)) {
+            await pool.query(
+                'UPDATE tracks_summary SET point_count = point_count + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                [count, tid]
+            );
+        }
 
         res.json({
             success: true,
