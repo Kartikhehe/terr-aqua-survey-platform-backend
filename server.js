@@ -8,7 +8,6 @@ import waypointsRoutes from './routes/waypoints.js';
 import projectsRoutes from './routes/projects.js';
 import uploadRoutes from './routes/upload.js';
 import authRoutes from './routes/auth.js';
-import tracksRoutes from './routes/tracks.js';
 import { startAutoPauseJob } from './jobs/autoPauseProjects.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,7 +34,7 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-
+    
     // Check if origin is in allowed list
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -112,7 +111,6 @@ app.use('/auth', authRoutes);
 app.use('/api/waypoints', waypointsRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/upload', uploadRoutes);
-app.use('/api/tracks', tracksRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -122,7 +120,7 @@ app.get('/api/health', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-
+  
   // Handle CORS errors
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS: Origin not allowed' });

@@ -1,176 +1,66 @@
-# GPS Path Tracking Implementation - Setup Instructions
+# GPS Path Tracking Implementation - Setup Instructions (PostGIS)
 
 ## Overview
-This feature adds real-time GPS path tracking for survey projects, storing tracks in GPX-compatible format.
+This feature provides high-performance real-time GPS path tracking using **PostGIS** spatial geography types. It was upgraded on 2025-12-18 to replace the previous JSONB-based tracking.
 
 ## Database Setup
 
-### Step 1: Run the Migration
-
-You need to run the SQL migration to create the `tracks` table in your existing database.
+### Step 1: Enable PostGIS & Run Migration
+You must have the PostGIS extension installed on your PostgreSQL server.
 
 **Option A: Using psql command line**
 ```bash
-# Navigate to server directory
-cd server
-
-# Run the migration (replace with your actual database credentials)
-psql -U your_username -d your_database_name -f database/migrations/2025-12-17-add-tracks-table.sql
+# Navigate to project root
+# Run the 2025-12-18 migration
+psql -U your_username -d your_database -f server/database/migrations/2025-12-18-postgis-gps-tracking.sql
 ```
 
-**Option B: Using pgAdmin or Database GUI**
-1. Open pgAdmin or your preferred PostgreSQL GUI
-2. Connect to your database
-3. Open the SQL query tool
-4. Copy and paste the contents of `server/database/migrations/2025-12-17-add-tracks-table.sql`
-5. Execute the query
+**Option B: Manual Execution**
+1. Open your DB client (pgAdmin, DBeaver, etc.)
+2. Run `CREATE EXTENSION IF NOT EXISTS postgis;`
+3. Execute the full contents of `server/database/migrations/2025-12-18-postgis-gps-tracking.sql`.
 
-**Option C: Using Node.js script (if you have a migration runner)**
-```javascript
-// If you have a migration runner, add the migration file to your migrations folder
-// and run your migration command
-npm run migrate
-```
-
-### Step 2: Verify the Migration
-
-After running the migration, verify that the `tracks` table was created:
+### Step 2: Verify the Tables
+Verify that the spatial schema is active:
 
 ```sql
--- Check if table exists
-SELECT table_name 
-FROM information_schema.tables 
-WHERE table_schema = 'public' 
-AND table_name = 'tracks';
+-- This should show the 'location' column with type 'geography'
+\d track_points
 
--- View table structure
-\d tracks
+-- This should show recording summary metadata
+\d tracks_summary
 ```
 
-You should see:
-- `id` (SERIAL PRIMARY KEY)
-- `project_id` (INTEGER, references projects)
-- `user_id` (INTEGER, references users)
-- `track_points` (JSONB array)
-- `started_at`, `ended_at` (TIMESTAMP)
-- `total_distance` (DECIMAL)
-- `total_duration` (INTEGER)
-- `is_active` (BOOLEAN)
-- `created_at`, `updated_at` (TIMESTAMP)
+## Backend Configuration
 
-## Backend Setup
+### REST API Endpoints
+The backend provides the following optimized endpoints in `/api/tracks`:
 
-### Step 3: Restart the Server
+- `POST /start`: Initializes a `tracks_summary` record.
+- `POST /points/batch`: Receives a list of points (lat, lng, accuracy) and inserts them into `track_points`.
+- `PUT /end`: Marks the track as inactive and calculates the final `total_distance`.
 
-The backend routes have been added automatically. Just restart your server:
+## Frontend Integration
 
-```bash
-# Stop the current server (Ctrl+C)
-# Then restart
-cd server
-npm run dev
-```
+### The GPSTracker Utility
+The system use a dedicated `GPSTracker` class (`src/utils/gpsTracker.js`) which handles:
+1. **Filtering**: Ignores points with accuracy > 50m.
+2. **Throttling**: Saves points only if 5m moved or 5s passed.
+3. **Buffering**: Collects 5 points before sending a batch to the server.
+4. **Visualization**: Manages a Leaflet Polyline with a green dotted style.
 
-### Step 4: Test the API
-
-Test that the tracks API is working:
-
-```bash
-# Health check
-curl http://localhost:3001/api/health
-
-# Test tracks endpoint (requires authentication)
-curl -X POST http://localhost:3001/api/tracks \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{"project_id": 1}'
-```
-
-## Frontend Setup
-
-### Step 5: Add Frontend API Methods
-
-The tracks API methods have been added to `src/services/api.js`. You can now use:
+### Real-Time Usage in MapApp
+In `MapApp.jsx`, the tracker is initialized when a survey starts:
 
 ```javascript
-import { tracksAPI } from '../services/api';
+// Start
+gpsTrackerRef.current = new GPSTracker(map, projectId);
+await gpsTrackerRef.current.start();
 
-// Create a new track
-const track = await tracksAPI.create(projectId);
-
-// Add a point to the track
-await tracksAPI.addPoint(trackId, {
-  lat: 26.5167,
-  lng: 80.2315,
-  accuracy: 10,
-  elevation: 100,
-  timestamp: new Date().toISOString()
-});
-
-// End the track
-await tracksAPI.endTrack(trackId);
-
-// Get all tracks for a project
-const tracks = await tracksAPI.getByProject(projectId);
-
-// Export track as GPX
-const gpxData = await tracksAPI.exportGPX(trackId);
+// Feed positions from watchPosition
+gpsTrackerRef.current.processPosition(lat, lng, accuracy);
 ```
 
-## How It Works
-
-1. **Start Survey**: When a project starts recording, a new track is created
-2. **Record Points**: GPS coordinates are recorded every 5-10 seconds while recording
-3. **Draw Path**: A dotted line is drawn on the map in real-time
-4. **Pause/Resume**: Track recording pauses when project is paused
-5. **End Survey**: Track is finalized when project ends
-6. **View Tracks**: Saved tracks can be loaded and displayed on the map
-7. **Export GPX**: Tracks can be exported in standard GPX format
-
-## Data Format
-
-### Track Points (JSONB)
-```json
-[
-  {
-    "lat": 26.5167,
-    "lng": 80.2315,
-    "accuracy": 10,
-    "elevation": 100,
-    "timestamp": "2025-12-17T12:30:00.000Z"
-  }
-]
-```
-
-### GPX Export Format
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="TerrAqua Survey Platform">
-  <metadata>
-    <name>Project Name Track</name>
-    <time>2025-12-17T12:00:00.000Z</time>
-  </metadata>
-  <trk>
-    <name>Project Name</name>
-    <trkseg>
-      <trkpt lat="26.5167" lon="80.2315">
-        <ele>100</ele>
-        <time>2025-12-17T12:30:00.000Z</time>
-        <hdop>10</hdop>
-      </trkpt>
-    </trkseg>
-  </trk>
-</gpx>
-```
-
-## Next Steps
-
-After completing the database setup, you can implement the frontend tracking logic in `MapApp.jsx`:
-
-1. Start tracking when `handleStartRecording()` is called
-2. Record GPS points using `setInterval()` every 5-10 seconds
-3. Draw polyline on map using Leaflet
-4. Pause tracking when `handlePauseRecording()` is called
-5. End tracking when project ends
-
-Would you like me to implement the frontend tracking logic next?
+## Data Visualization
+- **Active Path**: Shared green dotted line on the map.
+- **Historic Tracks**: Loaded via `GPSTracker.loadTrack(map, projectId)` as solid blue lines.
