@@ -61,14 +61,16 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'No active track found for this project' });
         }
 
+        const track_id = trackCheck.rows[0].id;
+
         // Build batch insert query using PostGIS ST_MakePoint
         const values = [];
         const placeholders = [];
 
         points.forEach((point, index) => {
-            const baseIndex = index * 7; // index * 7
+            const baseIndex = index * 8; // index * 8 parameters now
             placeholders.push(
-                `($${baseIndex + 1}, $${baseIndex + 2}, ST_SetSRID(ST_MakePoint($${baseIndex + 3}, $${baseIndex + 4}), 4326)::geography, $${baseIndex + 5}, $${baseIndex + 6}, $${baseIndex + 7})`
+                `($${baseIndex + 1}, $${baseIndex + 2}, ST_SetSRID(ST_MakePoint($${baseIndex + 3}, $${baseIndex + 4}), 4326)::geography, $${baseIndex + 5}, $${baseIndex + 6}, $${baseIndex + 7}, $${baseIndex + 8})`
             );
             values.push(
                 project_id,
@@ -77,14 +79,15 @@ router.post('/points/batch', authenticateToken, async (req, res) => {
                 point.lat, // latitude second
                 point.accuracy || null,
                 point.elevation || null,
-                point.timestamp || new Date().toISOString() // Use client timestamp if available
+                point.timestamp || new Date().toISOString(),
+                track_id
             );
         });
 
         const query = `
-            INSERT INTO track_points (project_id, user_id, location, accuracy, elevation, recorded_at)
+            INSERT INTO track_points (project_id, user_id, location, accuracy, elevation, recorded_at, track_id)
             VALUES ${placeholders.join(', ')}
-            RETURNING id, ST_Y(location::geometry) as lat, ST_X(location::geometry) as lng, recorded_at
+            RETURNING id, ST_Y(location::geometry) as lat, ST_X(location::geometry) as lng, recorded_at, track_id
         `;
 
         const result = await pool.query(query, values);
@@ -112,10 +115,22 @@ router.put('/end', authenticateToken, async (req, res) => {
         const { project_id } = req.body;
         const user_id = req.user.id;
 
-        // Calculate total distance using PostGIS
-        const distanceResult = await pool.query(
-            'SELECT calculate_track_distance($1, $2) as total_distance',
+        // Find the active track summary ID
+        const trackCheck = await pool.query(
+            'SELECT id FROM tracks_summary WHERE project_id = $1 AND user_id = $2 AND is_active = true',
             [project_id, user_id]
+        );
+
+        if (trackCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'No active track found' });
+        }
+
+        const track_id = trackCheck.rows[0].id;
+
+        // Calculate segment distance using the new function
+        const distanceResult = await pool.query(
+            'SELECT calculate_segment_distance($1) as total_distance',
+            [track_id]
         );
 
         const totalDistance = parseFloat(distanceResult.rows[0]?.total_distance || 0);
@@ -173,7 +188,8 @@ router.get('/project/:projectId', authenticateToken, async (req, res) => {
                 ST_X(location::geometry) as lng,
                 accuracy,
                 elevation,
-                recorded_at
+                recorded_at,
+                track_id
              FROM track_points
              WHERE project_id = $1 AND user_id = $2
              ORDER BY recorded_at ASC`,
