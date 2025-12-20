@@ -148,17 +148,91 @@ router.post('/multiple', upload.array('images', 10), async (req, res) => {
       return res.status(400).json({ error: 'No image files provided' });
     }
 
-    // Upload all images to Cloudinary
+    // Parse device info from request
+    const deviceInfo = req.body.deviceInfo ? JSON.parse(req.body.deviceInfo) : {};
+    const userName = req.user?.name || (req.user?.email ? req.user.email.split('@')[0] : (deviceInfo.userName || 'Unknown User'));
+    const deviceName = deviceInfo.deviceName || 'Unknown Device';
+
+    // Format date manually to ensure no commas
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+    // Remove any commas that might still appear depending on locale implementation
+    const uploadTime = `${dateStr.replace(/,/g, '')} | ${timeStr}`;
+
+    const locationStr = deviceInfo.location ? `Lat: ${deviceInfo.location.lat} Lng: ${deviceInfo.location.lng}` : '';
+
+    // Create watermark text lines
+    const line1 = `Image Captured by: ${userName}`;
+    const line2 = `Uploaded at: ${uploadTime}`;
+    const line3 = `Device: ${deviceName}`;
+    const line4 = locationStr ? `Location: ${locationStr}` : '';
+
+    // Upload all images to Cloudinary with watermarks
     const uploadPromises = req.files.map((file) => {
       return new Promise((resolve, reject) => {
+        const transformations = [
+          // Base quality optimization
+          { quality: 'auto', fetch_format: 'auto' },
+
+          // Line 1 - Image Captured by
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line1 },
+            gravity: 'south_west', x: 20, y: 125, color: 'white'
+          },
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line1 },
+            gravity: 'south_west', x: 22, y: 123, color: 'black', opacity: 70
+          },
+
+          // Line 2 - Uploaded at
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line2 },
+            gravity: 'south_west', x: 20, y: 90, color: 'white'
+          },
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line2 },
+            gravity: 'south_west', x: 22, y: 88, color: 'black', opacity: 70
+          },
+
+          // Line 3 - Device
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line3 },
+            gravity: 'south_west', x: 20, y: 55, color: 'white'
+          },
+          {
+            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line3 },
+            gravity: 'south_west', x: 22, y: 53, color: 'black', opacity: 70
+          },
+
+          // Add logo watermark (bottom-right)
+          {
+            overlay: 'terraqua_logo',
+            gravity: 'south_east', width: 180, x: 20, y: 20, opacity: 90
+          }
+        ];
+
+        // Add Line 4 (Location) if available
+        if (line4) {
+          // Insert before logo (which is the last element) to keep logical grouping, or just push.
+          // However, let's insert it before logo so logo corresponds to bottom-right layer conceptually.
+          transformations.splice(transformations.length - 1, 0,
+            {
+              overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line4 },
+              gravity: 'south_west', x: 20, y: 20, color: 'white'
+            },
+            {
+              overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line4 },
+              gravity: 'south_west', x: 22, y: 18, color: 'black', opacity: 70
+            }
+          );
+        }
+
         const stream = cloudinaryUpload.uploader.upload_stream(
           {
             folder: 'navigation-tracking',
             resource_type: 'image',
-            transformation: [
-              { quality: 'auto' },
-              { fetch_format: 'auto' }
-            ]
+            transformation: transformations
           },
           (error, result) => {
             if (error) {
@@ -194,7 +268,7 @@ router.post('/multiple', upload.array('images', 10), async (req, res) => {
       res.header('Access-Control-Allow-Origin', origin);
       res.header('Access-Control-Allow-Credentials', 'true');
     }
-    res.status(500).json({ error: 'Failed to upload images' });
+    res.status(500).json({ error: 'Failed to upload images', details: error.message });
   }
 });
 
