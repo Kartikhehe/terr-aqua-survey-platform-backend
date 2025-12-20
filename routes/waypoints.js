@@ -14,7 +14,7 @@ router.get('/default', async (req, res) => {
       'SELECT * FROM waypoints WHERE LOWER(name) = $1 LIMIT 1',
       ['default location']
     );
-    
+
     if (result.rows.length === 0) {
       // Return fallback default location if not found in database
       return res.json({
@@ -24,11 +24,12 @@ router.get('/default', async (req, res) => {
         longitude: 80.231507,
         notes: null,
         image_url: null,
+        images: [],
         created_at: null,
         updated_at: null
       });
     }
-    
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching default location:', error);
@@ -40,6 +41,7 @@ router.get('/default', async (req, res) => {
       longitude: 80.231507,
       notes: null,
       image_url: null,
+      images: [],
       created_at: null,
       updated_at: null
     });
@@ -76,11 +78,11 @@ router.get('/:id', async (req, res) => {
       'SELECT * FROM waypoints WHERE id = $1',
       [id]
     );
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Waypoint not found' });
     }
-    
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching waypoint:', error);
@@ -91,29 +93,31 @@ router.get('/:id', async (req, res) => {
 // Create a new waypoint (user-specific)
 router.post('/', async (req, res) => {
   try {
-    const { name, latitude, longitude, notes, image_url, project_id, project_name } = req.body;
+    const { name, latitude, longitude, notes, image_url, images, project_id, project_name } = req.body;
+    // Support both old (image_url) and new (images array) format
+    const imagesArray = images || (image_url ? [{ url: image_url, uploaded_at: new Date().toISOString() }] : []);
     const userId = req.user?.id;
-    
+
     // Check if "Default Location" already exists (case-insensitive)
     if (name && name.trim().toLowerCase() === 'default location') {
       const existingCheck = await pool.query(
         'SELECT id FROM waypoints WHERE LOWER(name) = $1 AND user_id IS NULL',
         ['default location']
       );
-      
+
       if (existingCheck.rows.length > 0) {
         // Update existing "Default Location" instead of creating a new one
         const result = await pool.query(
           `UPDATE waypoints 
-           SET latitude = $1, longitude = $2, notes = $3, image_url = $4, updated_at = CURRENT_TIMESTAMP
-           WHERE LOWER(name) = $5 AND user_id IS NULL
+           SET latitude = $1, longitude = $2, notes = $3, image_url = $4, images = $5, updated_at = CURRENT_TIMESTAMP
+           WHERE LOWER(name) = $6 AND user_id IS NULL
            RETURNING *`,
-          [latitude, longitude, notes || null, image_url || null, 'default location']
+          [latitude, longitude, notes || null, image_url || null, JSON.stringify(imagesArray), 'default location']
         );
         return res.status(200).json(result.rows[0]);
       }
     }
-    
+
     // If part of a project, ensure name uniqueness within project for this user
     if (project_id) {
       const existingCheck = await pool.query(
@@ -126,12 +130,12 @@ router.post('/', async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url, user_id, project_id, project_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO waypoints (name, latitude, longitude, notes, image_url, images, user_id, project_id, project_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [name, latitude, longitude, notes || null, image_url || null, userId || null, project_id || null, project_name || null]
+      [name, latitude, longitude, notes || null, image_url || null, JSON.stringify(imagesArray), userId || null, project_id || null, project_name || null]
     );
-    
+
     res.status(201).json(result.rows[0]);
     // Update project's last_activity timestamp if project_id provided
     if (project_id) {
@@ -151,19 +155,21 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, latitude, longitude, notes, image_url, project_id, project_name } = req.body;
+    const { name, latitude, longitude, notes, image_url, images, project_id, project_name } = req.body;
+    // Support both old (image_url) and new (images array) format
+    const imagesArray = images || (image_url ? [{ url: image_url, uploaded_at: new Date().toISOString() }] : []);
     const userId = req.user?.id;
-    
+
     // Get the current waypoint to check if it's "Default Location"
     const currentWaypoint = await pool.query(
       'SELECT name, user_id FROM waypoints WHERE id = $1',
       [id]
     );
-    
+
     if (currentWaypoint.rows.length === 0) {
       return res.status(404).json({ error: 'Waypoint not found' });
     }
-    
+
     const currentName = currentWaypoint.rows[0].name;
     const currentUserId = currentWaypoint.rows[0].user_id;
     const isDefaultLocation = currentName && currentName.trim().toLowerCase() === 'default location';
@@ -172,25 +178,25 @@ router.put('/:id', async (req, res) => {
     if (!isDefaultLocation && currentUserId !== userId) {
       return res.status(403).json({ error: 'Not authorized to update this waypoint' });
     }
-    
+
     // If it's "Default Location", don't allow name change
     // Also check if trying to change another waypoint's name to "Default Location"
     if (isDefaultLocation && name && name.trim().toLowerCase() !== 'default location') {
       return res.status(400).json({ error: 'Cannot change the name of "Default Location"' });
     }
-    
+
     if (!isDefaultLocation && name && name.trim().toLowerCase() === 'default location') {
       // Check if "Default Location" already exists
       const existingCheck = await pool.query(
         'SELECT id FROM waypoints WHERE LOWER(name) = $1 AND id != $2',
         ['default location', id]
       );
-      
+
       if (existingCheck.rows.length > 0) {
         return res.status(400).json({ error: 'A waypoint named "Default Location" already exists' });
       }
     }
-    
+
     // If updating project membership ensure unique name within project
     if (project_id && name) {
       const existingCheck = await pool.query(
@@ -204,12 +210,12 @@ router.put('/:id', async (req, res) => {
 
     const result = await pool.query(
       `UPDATE waypoints 
-       SET name = $1, latitude = $2, longitude = $3, notes = $4, image_url = $5, project_id = $6, project_name = $7, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $8
+       SET name = $1, latitude = $2, longitude = $3, notes = $4, image_url = $5, images = $6, project_id = $7, project_name = $8, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $9
        RETURNING *`,
-      [name, latitude, longitude, notes || null, image_url || null, project_id || null, project_name || null, id]
+      [name, latitude, longitude, notes || null, image_url || null, JSON.stringify(imagesArray), project_id || null, project_name || null, id]
     );
-    
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error updating waypoint:', error);
@@ -222,17 +228,17 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
-    
-    // Get waypoint to check if it's "Default Location" and if it has an image
+
+    // Get waypoint to check if it's "Default Location" and if it has images
     const waypointResult = await pool.query(
-      'SELECT name, image_url, user_id FROM waypoints WHERE id = $1',
+      'SELECT name, image_url, images, user_id FROM waypoints WHERE id = $1',
       [id]
     );
-    
+
     if (waypointResult.rows.length === 0) {
       return res.status(404).json({ error: 'Waypoint not found' });
     }
-    
+
     // Prevent deletion of "Default Location"
     const waypointName = waypointResult.rows[0].name;
     if (waypointName && waypointName.trim().toLowerCase() === 'default location') {
@@ -243,26 +249,43 @@ router.delete('/:id', async (req, res) => {
     if (waypointResult.rows[0].user_id !== userId) {
       return res.status(403).json({ error: 'Not authorized to delete this waypoint' });
     }
-    
-    // Delete image from Cloudinary if it exists
-    if (waypointResult.rows[0].image_url) {
+
+    // Delete all images from Cloudinary if they exist
+    const images = waypointResult.rows[0].images || [];
+    if (images.length > 0) {
+      for (const image of images) {
+        try {
+          if (image.public_id) {
+            await cloudinaryUpload.uploader.destroy(image.public_id);
+          } else if (image.url) {
+            // Extract public_id from URL if not stored
+            const urlParts = image.url.split('/');
+            const publicId = urlParts[urlParts.length - 1].split('.')[0];
+            await cloudinaryUpload.uploader.destroy(publicId);
+          }
+        } catch (cloudinaryError) {
+          console.error('Error deleting image from Cloudinary:', cloudinaryError);
+          // Continue with next image
+        }
+      }
+    }
+    // Also delete old single image_url if it exists (backward compatibility)
+    else if (waypointResult.rows[0].image_url) {
       try {
-        // Extract public_id from Cloudinary URL
         const urlParts = waypointResult.rows[0].image_url.split('/');
         const publicId = urlParts[urlParts.length - 1].split('.')[0];
         await cloudinaryUpload.uploader.destroy(publicId);
       } catch (cloudinaryError) {
         console.error('Error deleting image from Cloudinary:', cloudinaryError);
-        // Continue with waypoint deletion even if image deletion fails
       }
     }
-    
+
     // Delete waypoint from database
     const result = await pool.query(
       'DELETE FROM waypoints WHERE id = $1 RETURNING *',
       [id]
     );
-    
+
     res.json({ message: 'Waypoint deleted successfully', waypoint: result.rows[0] });
   } catch (error) {
     console.error('Error deleting waypoint:', error);

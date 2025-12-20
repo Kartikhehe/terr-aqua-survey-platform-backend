@@ -25,16 +25,16 @@ const isOriginAllowed = (origin) => {
 // Middleware to set CORS headers on all upload routes
 router.use((req, res, next) => {
   const origin = req.headers.origin;
-  
+
   const isAllowed = !origin || isOriginAllowed(origin);
-  
+
   if (isAllowed && origin) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   }
-  
+
   next();
 });
 
@@ -101,7 +101,7 @@ router.post('/', upload.single('image'), async (req, res) => {
           console.error('Cloudinary upload error:', error);
           return res.status(500).json({ error: 'Failed to upload image to Cloudinary' });
         }
-        
+
         res.json({
           image_url: result.secure_url,
           public_id: result.public_id
@@ -114,7 +114,7 @@ router.post('/', upload.single('image'), async (req, res) => {
     bufferStream.push(req.file.buffer);
     bufferStream.push(null);
     bufferStream.pipe(stream);
-    
+
   } catch (error) {
     console.error('Error uploading image:', error);
     // Make sure CORS headers are included even on error
@@ -123,6 +123,105 @@ router.post('/', upload.single('image'), async (req, res) => {
       res.header('Access-Control-Allow-Credentials', 'true');
     }
     res.status(500).json({ error: 'Failed to upload image' });
+  }
+});
+
+// Upload multiple images to Cloudinary
+router.post('/multiple', upload.array('images', 10), async (req, res) => {
+  const origin = req.headers.origin || '';
+
+  // Check Cloudinary configuration
+  const missingCloudinary = !process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET;
+  if (missingCloudinary) {
+    console.error('Cloudinary environment variables are missing. Upload cannot proceed.');
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    return res.status(500).json({ error: 'Cloudinary not configured. Uploads are disabled.' });
+  }
+
+  console.log('Multiple upload request from origin:', origin, 'files:', req.files?.length || 0);
+
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No image files provided' });
+    }
+
+    // Upload all images to Cloudinary
+    const uploadPromises = req.files.map((file) => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinaryUpload.uploader.upload_stream(
+          {
+            folder: 'navigation-tracking',
+            resource_type: 'image',
+            transformation: [
+              { quality: 'auto' },
+              { fetch_format: 'auto' }
+            ]
+          },
+          (error, result) => {
+            if (error) {
+              console.error('Cloudinary upload error:', error);
+              reject(error);
+            } else {
+              resolve({
+                url: result.secure_url,
+                public_id: result.public_id,
+                uploaded_at: new Date().toISOString()
+              });
+            }
+          }
+        );
+
+        const bufferStream = new Readable();
+        bufferStream.push(file.buffer);
+        bufferStream.push(null);
+        bufferStream.pipe(stream);
+      });
+    });
+
+    const uploadedImages = await Promise.all(uploadPromises);
+
+    res.json({
+      images: uploadedImages,
+      count: uploadedImages.length
+    });
+
+  } catch (error) {
+    console.error('Error uploading multiple images:', error);
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    res.status(500).json({ error: 'Failed to upload images' });
+  }
+});
+
+// Delete a single image from Cloudinary
+router.delete('/image/:publicId', async (req, res) => {
+  const origin = req.headers.origin || '';
+
+  try {
+    const { publicId } = req.params;
+
+    if (!publicId) {
+      return res.status(400).json({ error: 'No public_id provided' });
+    }
+
+    // Decode the public_id (it might be URL encoded)
+    const decodedPublicId = decodeURIComponent(publicId);
+
+    await cloudinaryUpload.uploader.destroy(decodedPublicId);
+
+    res.json({ message: 'Image deleted successfully', public_id: decodedPublicId });
+  } catch (error) {
+    console.error('Error deleting image:', error);
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    res.status(500).json({ error: 'Failed to delete image' });
   }
 });
 
