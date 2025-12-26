@@ -132,13 +132,18 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  // Start the auto-pause background job
-  try {
-    startAutoPauseJob();
-  } catch (err) {
-    console.error('Failed to start auto-pause job:', err?.message || err);
-  }
-});
+// Only start the server if not in Vercel serverless environment
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+    // Start the auto-pause background job
+    try {
+      startAutoPauseJob();
+    } catch (err) {
+      console.error('Failed to start auto-pause job:', err?.message || err);
+    }
+  });
+}
 
+// Export for Vercel serverless
+export default app;
