@@ -41,6 +41,26 @@ const generateOTP = () => {
 // Helper: Send OTP Email
 const sendOTPEmail = async (email, otp) => {
   try {
+    // Check if RESEND_API_KEY is configured
+    if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 're_xxxxxxxxxxxxx') {
+      console.error('❌ RESEND_API_KEY is not configured!');
+      console.error('Please add RESEND_API_KEY to your .env file');
+      console.error('Get your API key from: https://resend.com/api-keys');
+
+      // In development, log the OTP instead of failing
+      if (process.env.NODE_ENV === 'development') {
+        console.log('\n=================================');
+        console.log('📧 DEVELOPMENT MODE - OTP EMAIL');
+        console.log('=================================');
+        console.log(`To: ${email}`);
+        console.log(`OTP Code: ${otp}`);
+        console.log('=================================\n');
+        return { id: 'dev-mode-no-email' };
+      }
+
+      throw new Error('RESEND_API_KEY not configured. Please add it to your .env file.');
+    }
+
     const { data, error } = await resend.emails.send({
       from: 'onboarding@resend.dev', // Update with your verify domain or use onboarding@resend.dev for testing
       to: [email],
@@ -59,16 +79,107 @@ const sendOTPEmail = async (email, otp) => {
     });
 
     if (error) {
-      console.error('Resend API Error:', error);
-      throw new Error('Failed to send verification email');
+      console.error('❌ Resend API Error:', JSON.stringify(error, null, 2));
+
+      // If it's a domain verification error, fall back to console logging
+      if (error.message && error.message.includes('verify a domain')) {
+        console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+        console.log('=================================');
+        console.log('📧 OTP EMAIL (Console Fallback)');
+        console.log('=================================');
+        console.log(`To: ${email}`);
+        console.log(`OTP Code: ${otp}`);
+        console.log('=================================');
+        console.log('ℹ️  To send real emails, verify a domain at: https://resend.com/domains\n');
+        return { id: 'console-fallback-domain-not-verified' };
+      }
+
+      throw new Error(`Failed to send verification email: ${error.message || JSON.stringify(error)}`);
     }
+
+    console.log('✅ Email sent successfully to:', email);
     return data;
   } catch (err) {
-    console.error('Email sending failed:', err);
+    console.error('❌ Email sending failed:', err.message);
+
+    // If it's a Resend domain error, fall back to console
+    if (err.message && err.message.includes('verify a domain')) {
+      console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+      console.log('=================================');
+      console.log('📧 OTP EMAIL (Console Fallback)');
+      console.log('=================================');
+      console.log(`To: ${email}`);
+      console.log(`OTP Code: ${otp}`);
+      console.log('=================================');
+      console.log('ℹ️  To send real emails, verify a domain at: https://resend.com/domains\n');
+      return { id: 'console-fallback-domain-not-verified' };
+    }
+
+    console.error('Full error:', err);
     throw err;
   }
 };
 
+/**
+ * @swagger
+ * /auth/signup:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Register a new user
+ *     description: Create a new user account and send OTP verification email
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *               - full_name
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *                 example: password123
+ *               full_name:
+ *                 type: string
+ *                 example: John Doe
+ *     responses:
+ *       201:
+ *         description: Signup successful, OTP sent to email
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Signup successful. Please verify your email with the OTP sent.
+ *                 email:
+ *                   type: string
+ *                   example: user@example.com
+ *                 requiresVerification:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Bad request - validation error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Signup route
 router.post('/signup', async (req, res) => {
   try {
@@ -133,12 +244,22 @@ router.post('/signup', async (req, res) => {
     );
 
     // Send Email
-    await sendOTPEmail(lowerEmail, otp);
+    const emailResult = await sendOTPEmail(lowerEmail, otp);
+
+    // Check if we're in development mode or console fallback and email wasn't actually sent
+    const isConsoleFallback = emailResult?.id === 'dev-mode-no-email' || emailResult?.id === 'console-fallback-domain-not-verified';
+    const isDomainNotVerified = emailResult?.id === 'console-fallback-domain-not-verified';
 
     res.status(201).json({
-      message: 'Signup successful. Please verify your email with the OTP sent.',
+      message: isConsoleFallback
+        ? isDomainNotVerified
+          ? 'Signup successful. OTP has been logged to the server console (Resend domain not verified).'
+          : 'Signup successful. OTP has been logged to the server console (development mode).'
+        : 'Signup successful. Please verify your email with the OTP sent.',
       email: lowerEmail,
-      requiresVerification: true
+      requiresVerification: true,
+      consoleFallback: isConsoleFallback,
+      ...(isConsoleFallback && { note: 'Check the server console for the OTP code' })
     });
 
   } catch (error) {
@@ -154,6 +275,59 @@ router.post('/signup', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/verify-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Verify email with OTP
+ *     description: Verify user email using the OTP sent during signup
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - otp
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *               otp:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       200:
+ *         description: Email verified successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Email verified successfully
+ *                 token:
+ *                   type: string
+ *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+ *                 user:
+ *                   $ref: '#/components/schemas/User'
+ *       400:
+ *         description: Invalid or expired OTP
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Verification failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Verify OTP Route
 router.post('/verify-otp', async (req, res) => {
   try {
@@ -245,6 +419,56 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/resend-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Resend OTP
+ *     description: Resend verification OTP to user email
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *     responses:
+ *       200:
+ *         description: New OTP sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: New OTP sent to your email.
+ *       400:
+ *         description: User already verified or not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Failed to resend OTP
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Resend OTP Route
 router.post('/resend-otp', async (req, res) => {
   try {
@@ -285,6 +509,79 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: User login
+ *     description: Authenticate user and receive JWT token
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 example: password123
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Login successful
+ *                 token:
+ *                   type: string
+ *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+ *                 user:
+ *                   $ref: '#/components/schemas/User'
+ *       400:
+ *         description: Missing credentials
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Invalid credentials
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Email not verified
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                 requiresVerification:
+ *                   type: boolean
+ *                 email:
+ *                   type: string
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Login route
 router.post('/login', async (req, res) => {
   try {
@@ -424,6 +721,36 @@ router.post('/login', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/me:
+ *   get:
+ *     tags: [Authentication]
+ *     summary: Get current user
+ *     description: Get authenticated user information
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User information retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
+ *       401:
+ *         description: Unauthorized - Invalid or missing token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Get current user route
 router.get('/me', authenticateToken, async (req, res) => {
   try {
@@ -439,6 +766,25 @@ router.get('/me', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/logout:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: User logout
+ *     description: Clear authentication token and logout user
+ *     responses:
+ *       200:
+ *         description: Logout successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Logout successful
+ */
 // Logout route
 router.post('/logout', (req, res) => {
   // Clear cookie with various possible options to ensure it's removed

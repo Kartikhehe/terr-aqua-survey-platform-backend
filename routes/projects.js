@@ -7,6 +7,38 @@ const router = express.Router();
 // All project routes require authentication
 router.use(authenticateToken);
 
+/**
+ * @swagger
+ * /api/projects:
+ *   get:
+ *     tags: [Projects]
+ *     summary: Get all projects for authenticated user
+ *     description: Retrieve all projects belonging to the authenticated user
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of projects
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Project'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Failed to fetch projects
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get('/', async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -21,6 +53,38 @@ router.get('/', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects/active:
+ *   get:
+ *     tags: [Projects]
+ *     summary: Get active project
+ *     description: Get the currently active (playing) project with waypoints
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Active project with waypoints
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 project:
+ *                   allOf:
+ *                     - $ref: '#/components/schemas/Project'
+ *                     - type: object
+ *                       properties:
+ *                         waypoints:
+ *                           type: array
+ *                           items:
+ *                             $ref: '#/components/schemas/Waypoint'
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to fetch active project
+ */
 // Get active project for user
 router.get('/active', async (req, res) => {
   try {
@@ -57,6 +121,42 @@ router.get('/active', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects:
+ *   post:
+ *     tags: [Projects]
+ *     summary: Create a new project
+ *     description: Create a new survey project
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: Survey Project 1
+ *     responses:
+ *       201:
+ *         description: Project created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Project'
+ *       400:
+ *         description: Bad request - name required or duplicate
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to create project
+ */
 // Create a project
 router.post('/', async (req, res) => {
   try {
@@ -88,6 +188,52 @@ router.post('/', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects/{id}/status:
+ *   put:
+ *     tags: [Projects]
+ *     summary: Update project status
+ *     description: Change project status (playing/paused/ended)
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Project ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - status
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [playing, paused, ended]
+ *                 example: playing
+ *     responses:
+ *       200:
+ *         description: Project status updated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Project'
+ *       400:
+ *         description: Invalid status
+ *       404:
+ *         description: Project not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to update project status
+ */
 // Update project status (play/pause/end)
 router.put('/:id/status', async (req, res) => {
   try {
@@ -132,6 +278,37 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects/{id}/heartbeat:
+ *   post:
+ *     tags: [Projects]
+ *     summary: Send project heartbeat
+ *     description: Update project activity timestamp and checkpoint elapsed time
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Project ID
+ *     responses:
+ *       200:
+ *         description: Heartbeat recorded
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Project'
+ *       404:
+ *         description: Project not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to record heartbeat
+ */
 // Heartbeat endpoint: checkpoint elapsed time and touch last_activity while playing
 router.post('/:id/heartbeat', async (req, res) => {
   try {
@@ -160,6 +337,44 @@ router.post('/:id/heartbeat', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects/{id}:
+ *   get:
+ *     tags: [Projects]
+ *     summary: Get single project
+ *     description: Get project details with all waypoints
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Project ID
+ *     responses:
+ *       200:
+ *         description: Project details with waypoints
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 project:
+ *                   $ref: '#/components/schemas/Project'
+ *                 waypoints:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Waypoint'
+ *       404:
+ *         description: Project not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to get project
+ */
 // Get single project with waypoints
 router.get('/:id', async (req, res) => {
   try {
@@ -176,6 +391,43 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/projects/{id}:
+ *   delete:
+ *     tags: [Projects]
+ *     summary: Delete project
+ *     description: Delete project and all associated waypoints
+ *     security:
+ *       - cookieAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Project ID
+ *     responses:
+ *       200:
+ *         description: Project deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Project and all waypoints deleted successfully
+ *                 project:
+ *                   $ref: '#/components/schemas/Project'
+ *       404:
+ *         description: Project not found
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Failed to delete project
+ */
 // Delete project and all its waypoints
 router.delete('/:id', async (req, res) => {
   try {
