@@ -814,4 +814,335 @@ router.post('/logout', (req, res) => {
   res.json({ message: 'Logout successful' });
 });
 
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Request password reset OTP
+ *     description: Send OTP to user's email for password reset
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 email:
+ *                   type: string
+ *                 consoleFallback:
+ *                   type: boolean
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Failed to send OTP
+ */
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const lowerEmail = email.toLowerCase();
+
+    // Check if user exists
+    const userResult = await pool.query(
+      'SELECT id, email FROM users WHERE email = $1',
+      [lowerEmail]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No account found with this email address' });
+    }
+
+    // Generate and store OTP
+    const otp = generateOTP();
+    const otpHash = await bcrypt.hash(otp, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Upsert OTP for password reset
+    await pool.query(
+      `INSERT INTO email_otps (email, otp_hash, expires_at) 
+       VALUES ($1, $2, $3)
+       ON CONFLICT (email) 
+       DO UPDATE SET otp_hash = $2, expires_at = $3`,
+      [lowerEmail, otpHash, expiresAt]
+    );
+
+    // Send OTP email
+    const emailResult = await sendPasswordResetOTP(lowerEmail, otp);
+    const isConsoleFallback = emailResult?.id === 'dev-mode-no-email' || emailResult?.id === 'console-fallback-domain-not-verified';
+
+    res.json({
+      message: isConsoleFallback
+        ? 'OTP has been logged to the server console (email service not configured).'
+        : 'Password reset OTP has been sent to your email.',
+      email: lowerEmail,
+      consoleFallback: isConsoleFallback,
+      ...(isConsoleFallback && { note: 'Check the server console for the OTP code' })
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/verify-reset-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Verify password reset OTP
+ *     description: Verify the OTP sent for password reset
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, otp]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: OTP verified successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 resetToken:
+ *                   type: string
+ *       400:
+ *         description: Invalid or expired OTP
+ *       500:
+ *         description: Verification failed
+ */
+router.post('/verify-reset-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const lowerEmail = email.toLowerCase();
+
+    // Get stored OTP
+    const otpResult = await pool.query(
+      'SELECT otp_hash, expires_at FROM email_otps WHERE email = $1',
+      [lowerEmail]
+    );
+
+    if (otpResult.rows.length === 0) {
+      return res.status(400).json({ error: 'No OTP found. Please request a new one.' });
+    }
+
+    const { otp_hash, expires_at } = otpResult.rows[0];
+
+    // Check if OTP has expired
+    if (new Date() > new Date(expires_at)) {
+      await pool.query('DELETE FROM email_otps WHERE email = $1', [lowerEmail]);
+      return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+    }
+
+    // Verify OTP
+    const isValid = await bcrypt.compare(otp, otp_hash);
+
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+    }
+
+    // Generate a temporary reset token (valid for 15 minutes)
+    const resetToken = jwt.sign(
+      { email: lowerEmail, purpose: 'password-reset' },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    res.json({
+      message: 'OTP verified successfully. You can now reset your password.',
+      resetToken
+    });
+
+  } catch (error) {
+    console.error('Verify reset OTP error:', error);
+    res.status(500).json({ error: 'Failed to verify OTP' });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Reset password
+ *     description: Reset user password with verified reset token
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [resetToken, password]
+ *             properties:
+ *               resetToken:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 minLength: 6
+ *     responses:
+ *       200:
+ *         description: Password reset successfully
+ *       400:
+ *         description: Invalid token or password
+ *       500:
+ *         description: Failed to reset password
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { resetToken, password } = req.body;
+
+    if (!resetToken || !password) {
+      return res.status(400).json({ error: 'Reset token and new password are required' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    }
+
+    // Verify reset token
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+      if (decoded.purpose !== 'password-reset') {
+        return res.status(400).json({ error: 'Invalid reset token' });
+      }
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const email = decoded.email;
+
+    // Hash new password
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    // Update password
+    await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE email = $2',
+      [passwordHash, email]
+    );
+
+    // Delete used OTP
+    await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+
+    res.json({ message: 'Password reset successfully. You can now login with your new password.' });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// Helper: Send Password Reset OTP Email
+const sendPasswordResetOTP = async (email, otp) => {
+  try {
+    // Check if RESEND_API_KEY is configured
+    if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 're_xxxxxxxxxxxxx') {
+      console.error('❌ RESEND_API_KEY is not configured!');
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log('\n=================================');
+        console.log('📧 PASSWORD RESET OTP (Dev Mode)');
+        console.log('=================================');
+        console.log(`To: ${email}`);
+        console.log(`OTP Code: ${otp}`);
+        console.log('=================================\n');
+        return { id: 'dev-mode-no-email' };
+      }
+
+      throw new Error('RESEND_API_KEY not configured');
+    }
+
+    const { data, error } = await resend.emails.send({
+      from: 'onboarding@resend.dev',
+      to: [email],
+      subject: 'Reset Your TerrAqua Password',
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+          <h2 style="color: #0891B2;">Reset Your Password</h2>
+          <p>You requested to reset your password for TerrAqua Survey Platform. Use the following One-Time Password (OTP):</p>
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; letter-spacing: 5px; font-weight: bold; margin: 20px 0;">
+            ${otp}
+          </div>
+          <p>This code will expire in 10 minutes.</p>
+          <p style="color: #666; font-size: 14px;">If you didn't request this, please ignore this email and your password will remain unchanged.</p>
+        </div>
+      `
+    });
+
+    if (error) {
+      console.error('❌ Resend API Error:', JSON.stringify(error, null, 2));
+
+      if (error.message && error.message.includes('verify a domain')) {
+        console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+        console.log('=================================');
+        console.log('📧 PASSWORD RESET OTP (Console)');
+        console.log('=================================');
+        console.log(`To: ${email}`);
+        console.log(`OTP Code: ${otp}`);
+        console.log('=================================\n');
+        return { id: 'console-fallback-domain-not-verified' };
+      }
+
+      throw new Error(`Failed to send email: ${error.message}`);
+    }
+
+    console.log('✅ Password reset email sent to:', email);
+    return data;
+  } catch (err) {
+    console.error('❌ Email sending failed:', err.message);
+
+    if (err.message && err.message.includes('verify a domain')) {
+      console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+      console.log('=================================');
+      console.log('📧 PASSWORD RESET OTP (Console)');
+      console.log('=================================');
+      console.log(`To: ${email}`);
+      console.log(`OTP Code: ${otp}`);
+      console.log('=================================\n');
+      return { id: 'console-fallback-domain-not-verified' };
+    }
+
+    throw err;
+  }
+};
+
 export default router;
+
