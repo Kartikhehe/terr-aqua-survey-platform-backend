@@ -1,12 +1,21 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 import pool from '../database/connection.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Create Nodemailer Transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
 
 const allowedOrigins = [
   'https://terr-aqua-survey-platform.vercel.app',
@@ -41,11 +50,9 @@ const generateOTP = () => {
 // Helper: Send OTP Email
 const sendOTPEmail = async (email, otp) => {
   try {
-    // Check if RESEND_API_KEY is configured
-    if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 're_xxxxxxxxxxxxx') {
-      console.error('❌ RESEND_API_KEY is not configured!');
-      console.error('Please add RESEND_API_KEY to your .env file');
-      console.error('Get your API key from: https://resend.com/api-keys');
+    // Check if SMTP is configured
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      console.warn('⚠️  SMTP credentials not configured!');
 
       // In development, log the OTP instead of failing
       if (process.env.NODE_ENV === 'development') {
@@ -55,15 +62,15 @@ const sendOTPEmail = async (email, otp) => {
         console.log(`To: ${email}`);
         console.log(`OTP Code: ${otp}`);
         console.log('=================================\n');
-        return { id: 'dev-mode-no-email' };
+        return { msgId: 'dev-mode-no-email' };
       }
 
-      throw new Error('RESEND_API_KEY not configured. Please add it to your .env file.');
+      throw new Error('SMTP credentials not configured. Please add SMTP_USER and SMTP_PASS to your .env file.');
     }
 
-    const { data, error } = await resend.emails.send({
-      from: 'onboarding@resend.dev', // Update with your verify domain or use onboarding@resend.dev for testing
-      to: [email],
+    const mailOptions = {
+      from: process.env.SMTP_FROM || '"TerrAqua Support" <support@terraqua.me>',
+      to: email,
       subject: 'Verify your TerrAqua Account',
       html: `
         <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
@@ -76,46 +83,26 @@ const sendOTPEmail = async (email, otp) => {
           <p style="color: #666; font-size: 14px;">If you didn't request this code, please ignore this email.</p>
         </div>
       `
-    });
+    };
 
-    if (error) {
-      console.error('❌ Resend API Error:', JSON.stringify(error, null, 2));
-
-      // If it's a domain verification error, fall back to console logging
-      if (error.message && error.message.includes('verify a domain')) {
-        console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
-        console.log('=================================');
-        console.log('📧 OTP EMAIL (Console Fallback)');
-        console.log('=================================');
-        console.log(`To: ${email}`);
-        console.log(`OTP Code: ${otp}`);
-        console.log('=================================');
-        console.log('ℹ️  To send real emails, verify a domain at: https://resend.com/domains\n');
-        return { id: 'console-fallback-domain-not-verified' };
-      }
-
-      throw new Error(`Failed to send verification email: ${error.message || JSON.stringify(error)}`);
-    }
-
-    console.log('✅ Email sent successfully to:', email);
-    return data;
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ OTP email sent successfully to:', email, 'MessageID:', info.messageId);
+    return { msgId: info.messageId };
   } catch (err) {
     console.error('❌ Email sending failed:', err.message);
 
-    // If it's a Resend domain error, fall back to console
-    if (err.message && err.message.includes('verify a domain')) {
-      console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+    // Fallback to console if allowed
+    if (process.env.NODE_ENV === 'development') {
+      console.log('\n⚠️  EMAIL FAILED - Using Console Fallback');
       console.log('=================================');
-      console.log('📧 OTP EMAIL (Console Fallback)');
+      console.log('📧 OTP EMAIL (Fallback)');
       console.log('=================================');
       console.log(`To: ${email}`);
       console.log(`OTP Code: ${otp}`);
-      console.log('=================================');
-      console.log('ℹ️  To send real emails, verify a domain at: https://resend.com/domains\n');
-      return { id: 'console-fallback-domain-not-verified' };
+      console.log('=================================\n');
+      return { msgId: 'console-fallback-error' };
     }
 
-    console.error('Full error:', err);
     throw err;
   }
 };
@@ -247,14 +234,11 @@ router.post('/signup', async (req, res) => {
     const emailResult = await sendOTPEmail(lowerEmail, otp);
 
     // Check if we're in development mode or console fallback and email wasn't actually sent
-    const isConsoleFallback = emailResult?.id === 'dev-mode-no-email' || emailResult?.id === 'console-fallback-domain-not-verified';
-    const isDomainNotVerified = emailResult?.id === 'console-fallback-domain-not-verified';
+    const isConsoleFallback = emailResult?.msgId === 'dev-mode-no-email' || emailResult?.msgId === 'console-fallback-error';
 
     res.status(201).json({
       message: isConsoleFallback
-        ? isDomainNotVerified
-          ? 'Signup successful. OTP has been logged to the server console (Resend domain not verified).'
-          : 'Signup successful. OTP has been logged to the server console (development mode).'
+        ? 'Signup successful. OTP has been logged to the server console (Email service not configured or failed).'
         : 'Signup successful. Please verify your email with the OTP sent.',
       email: lowerEmail,
       requiresVerification: true,
@@ -888,7 +872,7 @@ router.post('/forgot-password', async (req, res) => {
 
     // Send OTP email
     const emailResult = await sendPasswordResetOTP(lowerEmail, otp);
-    const isConsoleFallback = emailResult?.id === 'dev-mode-no-email' || emailResult?.id === 'console-fallback-domain-not-verified';
+    const isConsoleFallback = emailResult?.msgId === 'dev-mode-no-email' || emailResult?.msgId === 'console-fallback-error';
 
     res.json({
       message: isConsoleFallback
@@ -1073,9 +1057,9 @@ router.post('/reset-password', async (req, res) => {
 // Helper: Send Password Reset OTP Email
 const sendPasswordResetOTP = async (email, otp) => {
   try {
-    // Check if RESEND_API_KEY is configured
-    if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 're_xxxxxxxxxxxxx') {
-      console.error('❌ RESEND_API_KEY is not configured!');
+    // Check if SMTP is configured
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      console.warn('⚠️  SMTP credentials not configured!');
 
       if (process.env.NODE_ENV === 'development') {
         console.log('\n=================================');
@@ -1084,15 +1068,15 @@ const sendPasswordResetOTP = async (email, otp) => {
         console.log(`To: ${email}`);
         console.log(`OTP Code: ${otp}`);
         console.log('=================================\n');
-        return { id: 'dev-mode-no-email' };
+        return { msgId: 'dev-mode-no-email' };
       }
 
-      throw new Error('RESEND_API_KEY not configured');
+      throw new Error('SMTP credentials not configured');
     }
 
-    const { data, error } = await resend.emails.send({
-      from: 'onboarding@resend.dev',
-      to: [email],
+    const mailOptions = {
+      from: process.env.SMTP_FROM || '"TerrAqua Support" <support@terraqua.me>',
+      to: email,
       subject: 'Reset Your TerrAqua Password',
       html: `
         <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
@@ -1105,39 +1089,23 @@ const sendPasswordResetOTP = async (email, otp) => {
           <p style="color: #666; font-size: 14px;">If you didn't request this, please ignore this email and your password will remain unchanged.</p>
         </div>
       `
-    });
+    };
 
-    if (error) {
-      console.error('❌ Resend API Error:', JSON.stringify(error, null, 2));
-
-      if (error.message && error.message.includes('verify a domain')) {
-        console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
-        console.log('=================================');
-        console.log('📧 PASSWORD RESET OTP (Console)');
-        console.log('=================================');
-        console.log(`To: ${email}`);
-        console.log(`OTP Code: ${otp}`);
-        console.log('=================================\n');
-        return { id: 'console-fallback-domain-not-verified' };
-      }
-
-      throw new Error(`Failed to send email: ${error.message}`);
-    }
-
-    console.log('✅ Password reset email sent to:', email);
-    return data;
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Password reset email sent successfully to:', email, 'MessageID:', info.messageId);
+    return { msgId: info.messageId };
   } catch (err) {
     console.error('❌ Email sending failed:', err.message);
 
-    if (err.message && err.message.includes('verify a domain')) {
-      console.log('\n⚠️  RESEND DOMAIN NOT VERIFIED - Using Console Fallback');
+    if (process.env.NODE_ENV === 'development') {
+      console.log('\n⚠️  EMAIL FAILED - Using Console Fallback');
       console.log('=================================');
-      console.log('📧 PASSWORD RESET OTP (Console)');
+      console.log('📧 PASSWORD RESET OTP (Fallback)');
       console.log('=================================');
       console.log(`To: ${email}`);
       console.log(`OTP Code: ${otp}`);
       console.log('=================================\n');
-      return { id: 'console-fallback-domain-not-verified' };
+      return { msgId: 'console-fallback-error' };
     }
 
     throw err;
