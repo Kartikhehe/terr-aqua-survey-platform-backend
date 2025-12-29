@@ -483,9 +483,15 @@ router.post('/resend-otp', async (req, res) => {
     );
 
     // Send Email
-    await sendOTPEmail(lowerEmail, otp);
+    const emailResult = await sendOTPEmail(lowerEmail, otp);
+    const isConsoleFallback = emailResult?.msgId === 'dev-mode-no-email' || emailResult?.msgId === 'console-fallback-error';
 
-    res.json({ message: 'New OTP sent to your email.' });
+    res.json({
+      message: isConsoleFallback
+        ? 'New OTP has been logged to the server console (email service not configured).'
+        : 'New OTP sent to your email.',
+      consoleFallback: isConsoleFallback
+    });
 
   } catch (error) {
     console.error('Resend OTP error:', error);
