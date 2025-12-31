@@ -175,58 +175,12 @@ router.post('/multiple', upload.array('images', 10), async (req, res) => {
           // Base quality optimization
           { quality: 'auto', fetch_format: 'auto' },
 
-          // Line 1 - Image Captured by
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line1 },
-            gravity: 'south_west', x: 20, y: 125, color: 'white'
-          },
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line1 },
-            gravity: 'south_west', x: 22, y: 123, color: 'black', opacity: 70
-          },
-
-          // Line 2 - Uploaded at
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line2 },
-            gravity: 'south_west', x: 20, y: 90, color: 'white'
-          },
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line2 },
-            gravity: 'south_west', x: 22, y: 88, color: 'black', opacity: 70
-          },
-
-          // Line 3 - Device
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line3 },
-            gravity: 'south_west', x: 20, y: 55, color: 'white'
-          },
-          {
-            overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line3 },
-            gravity: 'south_west', x: 22, y: 53, color: 'black', opacity: 70
-          },
-
-          // Add logo watermark (bottom-right)
+          // Add logo watermark (bottom-left)
           {
             overlay: 'terraqua_logo',
-            gravity: 'south_east', width: 180, x: 20, y: 20, opacity: 90
+            gravity: 'south_west', width: 180, x: 20, y: 20, opacity: 90
           }
         ];
-
-        // Add Line 4 (Location) if available
-        if (line4) {
-          // Insert before logo (which is the last element) to keep logical grouping, or just push.
-          // However, let's insert it before logo so logo corresponds to bottom-right layer conceptually.
-          transformations.splice(transformations.length - 1, 0,
-            {
-              overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line4 },
-              gravity: 'south_west', x: 20, y: 20, color: 'white'
-            },
-            {
-              overlay: { font_family: 'Arial', font_size: 26, font_weight: 'bold', text: line4 },
-              gravity: 'south_west', x: 22, y: 18, color: 'black', opacity: 70
-            }
-          );
-        }
 
         const stream = cloudinaryUpload.uploader.upload_stream(
           {
